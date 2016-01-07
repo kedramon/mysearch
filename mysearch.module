@@ -6,12 +6,59 @@
 function mysearch_permission() {
   return array(
     'access mysearch' => array(
-        'title' => 'Access My Search',
-        'description' => 'Allows a user to access search results',
-      )
-    );
+      'title' => 'Access My Search',
+      'description' => 'Allows a user to access search results',
+    )
+  );
 }
 
+/**
+ * Implements hook_theme().
+ */
+function mysearch_theme($existing, $type, $theme, $path) {
+
+  return array(
+    'mysearch_results' => array(
+      'variables' => array(
+        'results' => NULL,
+        'word' => NULL,
+      ),
+    ),
+  );
+}
+
+/**
+ * Returns HTML for search results.
+ *
+ * @param $variables
+ *   An associative array containing:
+ *   - results: array of links.
+ *   - word: searched word.
+ * @return string
+ * @ingroup themeable
+ */
+function theme_mysearch_results($variables) {
+  global $base_url;
+  extract($variables);
+  // Build h2 tag.
+  $output[] = array(
+    '#theme' => 'html_tag',
+    '#tag' => 'h2',
+    '#value' => t('Search for ') . check_plain($word),
+    '#suffix' => '<p>' . t('this is a basic search page that will return a list of
+     links to nodes which have the word `example` in them, for url like: !url',
+        array('!url' => l($base_url . '/mysearch/example', '/mysearch/example'))) . '</p>',
+  );
+  // Build ul list.
+  $output[] = array(
+    '#theme' => 'item_list',
+    '#items' => $results,
+    '#type' => 'ul',
+    '#attributes' => array('class' => 'my-list'),
+  );
+
+  return $output;
+}
 
 /**
  * Implementation of hook_menu().
@@ -26,7 +73,6 @@ function mysearch_menu() {
   return $items;
 }
 
-
 /**
  * Menu callback provides a simple list of nodes matching the
  * search term Example: hitting the URL:
@@ -34,21 +80,69 @@ function mysearch_menu() {
  * will return a list of links to nodes which have the word
  * example in them.
  */
-function mysearch_searchpage() {
-  $searchterm = arg(1);
-  $query = "
-     SELECT nid
-     FROM node_revisions
-     WHERE body LIKE '%$searchterm%'
-     ";
-  $search_results = db_query($query); 
-  $search_results = "<h2>Search for $searchterm</h2><ul>";
-  foreach($get_node_result as $record)) {
-    $node = node_load($record->nid);
-    $search_results .= '<li><a href="/node/'
-     . $node->nid . '" title="' . $node->title . '">'
-     . $node->title . '</a><!-- debugging output: '
-     . print_r($node) . '  --><\li>';
+function mysearch_searchpage($word = '') {
+  $links = array();
+  $word = trim($word);
+
+  // Return renderable array whit no result.
+  if (empty($word)) {
+    return array(
+      '#theme' => 'html_tag',
+      '#tag' => 'h2',
+      '#value' => t('No result'),
+    );
   }
-  return $search_results;
+
+  $field_options = _mysearch_searchble_fields();
+
+  $query = db_select('node', 'n');
+  foreach ($field_options as $table => $field) {
+    $query->leftJoin($table, $field, $field . '.entity_id = n.nid');
+  }
+  $query->fields('n', array('title', 'nid'));
+  // If we have some text fields, maybe one of them contain our word. Else just in title.
+  if (count($field_options)) {
+    $or = db_or();
+    $or->condition('n.title', '%' . db_like($word) . '%', 'LIKE');
+    foreach ($field_options as $table => $field) {
+      $or->condition($field . '.' . $field . '_value', '%' . db_like($word) . '%', 'LIKE');
+    }
+    $query->condition($or);
+  }
+  else {
+    $query->condition('n.title', '%' . db_like($word) . '%', 'LIKE');
+  }
+
+  $nodes = $query->execute()->fetchAllAssoc('nid');
+
+  // If no result just display not found.
+  if (count($nodes) === 0) {
+    $links[] = t('Not found');
+  }
+
+  // Build links.
+  foreach ($nodes as $record) {
+    $links[] = l($record->title, 'node/' . $record->nid, array('attributes' => array('title' => $record->title)));
+  }
+
+  return theme('mysearch_results', array('results' => $links, 'word' => $word));
+}
+
+/**
+ * Helper function that returns fields array for search.
+ * @todo $types_to_search - can be moved is some variable on configuration page.
+ * @todo Also this can be cached.
+ * @return array
+ */
+function _mysearch_searchble_fields() {
+  $field_options = array();
+
+  $types_to_search = array('text', 'text_long', 'text_with_summary');
+  foreach (field_info_fields() as $field => $info) {
+    if (in_array($info['type'], $types_to_search, NULL) && array_key_exists('node', $info['bundles'])) {
+      $table = key($info['storage']['details']['sql'][FIELD_LOAD_CURRENT]);
+      $field_options[$table] = $field;
+    }
+  }
+  return $field_options;
 }
